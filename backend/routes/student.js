@@ -1,6 +1,6 @@
 const express = require('express');
 const { updateProfile, getOffers, applyToOffer, getApplications } = require('../controllers/student');
-const { generateAgreement } = require('../controllers/admin');
+const { generateStudentAgreement } = require('../controllers/student');
 const { protect, authorize } = require('../middleware/auth');
 
 const router = express.Router();
@@ -14,6 +14,6 @@ router.post('/offers/:offerId/apply', applyToOffer);
 router.get('/applications', getApplications);
 
 
-router.get('/applications/:id/agreement', generateAgreement);
+router.get('/applications/:id/agreement', generateStudentAgreement);
 
 module.exports = router;

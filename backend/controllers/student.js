@@ -1,96 +1,193 @@
-const ErrorResponse = require('../utils/errorResponse');
-const { Student } = require('../models/User');
+const User = require('../models/User');
 const Offer = require('../models/Offer');
 const Application = require('../models/Application');
+const PDFDocument = require('pdfkit');
 
-// @desc    Update student profile
-// @route   PUT /api/v1/student/profile
-// @access  Private (Student only)
-exports.updateProfile = async (req, res, next) => {
+// =======================
+// UPDATE PROFILE
+// =======================
+exports.updateProfile = async (req, res) => {
     try {
-        const { name, skills, cvLink, github } = req.body;
-
-        const student = await Student.findByIdAndUpdate(
+        const user = await User.findByIdAndUpdate(
             req.user.id,
-            { name, skills, cvLink, github },
-            { new: true, runValidators: true }
+            req.body,
+            { new: true }
         );
 
-        res.status(200).json({ success: true, data: student });
+        res.json({ success: true, data: user });
+
     } catch (err) {
-        next(err);
+        console.error(err);
+        res.status(500).json({ msg: 'Server error' });
     }
 };
 
-// @desc    Get all validated offers (Search functionality)
-// @route   GET /api/v1/student/offers
-// @access  Private (Student only)
-exports.getOffers = async (req, res, next) => {
+// =======================
+// GET VALIDATED OFFERS
+// =======================
+exports.getOffers = async (req, res) => {
     try {
-        let query;
-        const reqQuery = { ...req.query };
+        const offers = await Offer.find({ status: 'validated' })
+            .populate('company', 'name');
 
-        // Fields to exclude from filtering
-        const removeFields = ['select', 'sort', 'page', 'limit'];
-        removeFields.forEach(param => delete reqQuery[param]);
+        res.json({ success: true, data: offers });
 
-        // Create query string
-        let queryStr = JSON.stringify(reqQuery);
-        queryStr = queryStr.replace(/\b(gt|gte|lt|lte|in)\b/g, match => `$${match}`);
-
-        // Finding resource - only validated offers
-        query = Offer.find({ ...JSON.parse(queryStr), status: 'validated' }).populate('company', 'name email industry location');
-
-        // Executing query
-        const offers = await query;
-
-        res.status(200).json({ success: true, count: offers.length, data: offers });
     } catch (err) {
-        next(err);
+        console.error(err);
+        res.status(500).json({ msg: 'Server error' });
     }
 };
 
-// @desc    Apply to an offer
-// @route   POST /api/v1/student/offers/:offerId/apply
-// @access  Private (Student only)
-exports.applyToOffer = async (req, res, next) => {
+// =======================
+// APPLY TO OFFER
+// =======================
+exports.applyToOffer = async (req, res) => {
     try {
+        const { coverLetter } = req.body;
+
+        const exists = await Application.findOne({
+            student: req.user.id,
+            offer: req.params.offerId
+        });
+
+        if (exists) {
+            return res.status(400).json({ msg: 'Already applied' });
+        }
+
         const offer = await Offer.findById(req.params.offerId);
 
         if (!offer) {
-            return next(new ErrorResponse(`Offer not found with id of ${req.params.offerId}`, 404));
+            return res.status(404).json({ msg: 'Offer not found' });
         }
-
-        if (offer.status !== 'validated') {
-            return next(new ErrorResponse('You can only apply to validated offers', 400));
-        }
-
-        const { coverLetter } = req.body;
 
         const application = await Application.create({
             student: req.user.id,
-            offer: offer._id,
             company: offer.company,
+            offer: offer._id,
             coverLetter
         });
 
         res.status(201).json({ success: true, data: application });
+
     } catch (err) {
-        next(err);
+        console.error(err);
+        res.status(500).json({ msg: 'Server error' });
     }
 };
 
-// @desc    Get student applications
-// @route   GET /api/v1/student/applications
-// @access  Private (Student only)
-exports.getApplications = async (req, res, next) => {
+// =======================
+// GET APPLICATIONS
+// =======================
+exports.getApplications = async (req, res) => {
     try {
-        const applications = await Application.find({ student: req.user.id })
-            .populate('offer', 'title location status')
-            .populate('company', 'name industry');
+        const apps = await Application.find({ student: req.user.id })
+            .populate('company', 'name')
+            .populate('offer', 'title location')
+            .sort({ createdAt: -1 });
 
-        res.status(200).json({ success: true, count: applications.length, data: applications });
+        res.json({ success: true, data: apps });
+
     } catch (err) {
-        next(err);
+        console.error(err);
+        res.status(500).json({ msg: 'Server error' });
+    }
+};
+
+// =======================
+// PROFESSIONAL PDF
+// =======================
+exports.generateStudentAgreement = async (req, res) => {
+    try {
+        const app = await Application.findById(req.params.id)
+            .populate('student')
+            .populate('company')
+            .populate('offer');
+
+        if (!app) {
+            return res.status(404).json({ msg: 'Application not found' });
+        }
+
+        if (app.status !== 'accepted') {
+            return res.status(403).json({ msg: 'Application not accepted yet' });
+        }
+
+        const doc = new PDFDocument({ margin: 50 });
+
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader(
+            'Content-Disposition',
+            `attachment; filename=agreement-${app._id}.pdf`
+        );
+
+        doc.pipe(res);
+
+        // ===== HEADER =====
+        doc
+            .fontSize(22)
+            .fillColor('#222')
+            .text('INTERNSHIP AGREEMENT', { align: 'center' });
+
+        doc.moveDown(2);
+
+        // ===== HELPERS =====
+        const sectionTitle = (title) => {
+            doc.moveDown();
+            doc.fontSize(14).fillColor('#555').text(title, { underline: true });
+            doc.moveDown(0.5);
+        };
+
+        const field = (label, value) => {
+            doc
+                .fontSize(12)
+                .fillColor('#000')
+                .text(`${label}: `, { continued: true })
+                .font('Helvetica-Bold')
+                .text(value)
+                .font('Helvetica');
+        };
+
+        // ===== STUDENT =====
+        sectionTitle('Student Information');
+        field('Full Name', app.student.name);
+        field('Email', app.student.email);
+
+        // ===== COMPANY =====
+        sectionTitle('Company Information');
+        field('Company Name', app.company.name);
+        field('Location', app.offer.location);
+
+        // ===== INTERNSHIP =====
+        sectionTitle('Internship Details');
+        field('Title', app.offer.title);
+        field('Date', new Date().toLocaleDateString());
+
+        doc.moveDown(2);
+
+        // ===== TEXT =====
+        doc
+            .fontSize(11)
+            .fillColor('#444')
+            .text(
+                'This agreement confirms that the student has been accepted for the internship position. Both parties agree to respect the internship terms and conditions.',
+                { align: 'justify' }
+            );
+
+        doc.moveDown(3);
+
+        // ===== SIGNATURE =====
+        doc.fontSize(12).text('Signatures', { underline: true });
+
+        doc.moveDown(2);
+        doc.text('Student Signature: __________________________');
+        doc.moveDown();
+        doc.text('Company Signature: __________________________');
+        doc.moveDown();
+        doc.text('Date: __________________________');
+
+        doc.end();
+
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ msg: 'Server error' });
     }
 };
